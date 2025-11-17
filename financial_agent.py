@@ -230,7 +230,7 @@ def retrieve_financial_context(state: Dict) -> Dict:
         # Extract company name from input
         keywords = state['processed_input'].split()
         for keyword in keywords:
-            company_info = processor.extract_company_info(keyword, info)
+            company_info = processor.extract_company_info(keyword, value)
             if company_info:
                 agent_state.current_company = company_info['company_name']
                 context['found_company'] = company_info

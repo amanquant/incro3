@@ -325,7 +325,7 @@ def update_memory(state: Dict) -> Dict:
 
     # Store conversation turn
     key = f"turn_{turn.turn_id}"
-    agent_state.memory_store.put(key, turn.to_dict())
+    agent_state.memory_store.put(key, value)
 
     # Store context if company found
     if state.get('financial_context', {}).get('found_company'):

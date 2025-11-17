@@ -13,3 +13,4 @@ fuzzywuzzy
 python-Levenshtein
 pyarrow
 ollama
+llama-cpp-python

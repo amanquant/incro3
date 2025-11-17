@@ -1,7 +1,15 @@
 streamlit
 pandas
 numpy
-openpyxl
-openai
+langgraph
+langchain
+langchain-core
+dropbox
+python-dotenv
 requests
+openpyxl
+scipy
+fuzzywuzzy
+python-Levenshtein
+pyarrow
 ollama

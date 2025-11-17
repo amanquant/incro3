@@ -161,7 +161,7 @@ class FinancialMemoryProcessor:
 
         # Store in memory
         key = f"company_{company_row['company']}"
-        self.store.put(key, value=info)
+        self.store.put(key, value)
 
         return info
 

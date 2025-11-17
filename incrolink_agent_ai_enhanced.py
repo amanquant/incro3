@@ -1,523 +1,284 @@
 """
-LangGraph LSTM Memory-Based Agent for Financial Analytics
-=========================================================
-Integrates LangGraph's InMemoryStore with financial data processing
-FIXED: BaseStore.put() method calls - follows LangGraph official API
+Streamlit Application - Main Entry Point
+=========================================
+Financial Analysis Agent with LangGraph Memory Integration
 """
 
-import os
-import json
+import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Literal
-from dataclasses import dataclass, asdict
-import uuid
+from pathlib import Path
+import sys
 
-# LangGraph imports
-from langgraph.graph import StateGraph, START, END
-from langgraph.store.base import BaseStore
-from langgraph.store.memory import InMemoryStore
+# Add current directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent))
 
-# Financial analysis imports (from existing code)
-import streamlit as st
+from financial_agent import display_agent_interface, init_agent_session
 from dropbox_integration import load_all_data_from_dropbox
 
 # ============================================================================
-# MEMORY STRUCTURES AND AGENT STATE
+# PAGE CONFIGURATION
 # ============================================================================
 
-@dataclass
-class ConversationTurn:
-    """Represents a single conversation turn"""
-    turn_id: str
-    timestamp: datetime
-    user_input: str
-    agent_response: str
-    financial_context: Dict[str, Any]
-    memory_references: List[str]
-
-    def to_dict(self) -> Dict:
-        return {
-            'turn_id': self.turn_id,
-            'timestamp': self.timestamp.isoformat(),
-            'user_input': self.user_input,
-            'agent_response': self.agent_response,
-            'financial_context': self.financial_context,
-            'memory_references': self.memory_references
-        }
-
-@dataclass
-class CompanyContext:
-    """Financial context for a company"""
-    company_name: str
-    category_code: str
-    metrics: Dict[str, float]
-    dcf_result: Dict[str, Any]
-    predictability: str
-    last_updated: datetime
-
-    def to_dict(self) -> Dict:
-        return {
-            'company_name': self.company_name,
-            'category_code': self.category_code,
-            'metrics': self.metrics,
-            'dcf_result': self.dcf_result,
-            'predictability': self.predictability,
-            'last_updated': self.last_updated.isoformat()
-        }
-
-class AgentState:
-    """Main agent state management"""
-    def __init__(self, user_id: str, session_id: str):
-        self.user_id = user_id
-        self.session_id = session_id
-        self.conversation_history: List[ConversationTurn] = []
-        self.company_contexts: Dict[str, CompanyContext] = {}
-        self.analysis_results: Dict[str, Any] = {}
-        self.current_company: Optional[str] = None
-        self.current_metric: Optional[str] = None
-        self.memory_store: InMemoryStore = InMemoryStore()
-        self.created_at = datetime.now()
-
-    def add_conversation_turn(self, user_input: str, agent_response: str, 
-                             context: Dict[str, Any] = None) -> ConversationTurn:
-        """Add a conversation turn to history"""
-        turn = ConversationTurn(
-            turn_id=str(uuid.uuid4()),
-            timestamp=datetime.now(),
-            user_input=user_input,
-            agent_response=agent_response,
-            financial_context=context or {},
-            memory_references=[]
-        )
-        self.conversation_history.append(turn)
-        return turn
-
-    def store_company_context(self, company: CompanyContext):
-        """Store company context in memory"""
-        self.company_contexts[company.company_name] = company
-
-    def get_conversation_context(self, last_n: int = 5) -> str:
-        """Get recent conversation context for LSTM memory"""
-        recent = self.conversation_history[-last_n:]
-        context = []
-        for turn in recent:
-            context.append(f"User: {turn.user_input}")
-            context.append(f"Agent: {turn.agent_response}")
-        return "\n".join(context)
-
-    def to_dict(self) -> Dict:
-        return {
-            'user_id': self.user_id,
-            'session_id': self.session_id,
-            'conversation_history': [turn.to_dict() for turn in self.conversation_history],
-            'company_contexts': {k: v.to_dict() for k, v in self.company_contexts.items()},
-            'current_company': self.current_company,
-            'current_metric': self.current_metric,
-            'created_at': self.created_at.isoformat()
-        }
+st.set_page_config(
+    page_title="Financial Analysis Agent",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        "Get Help": "https://github.com/amanquant/financial-agent",
+        "Report a bug": "https://github.com/amanquant/financial-agent/issues",
+        "About": "Financial Analysis Agent powered by LangGraph"
+    }
+)
 
 # ============================================================================
-# FINANCIAL DATA PROCESSOR WITH MEMORY INTEGRATION
+# STYLING & BRANDING
 # ============================================================================
 
-class FinancialMemoryProcessor:
-    """Processes financial data and maintains memory context"""
-
-    def __init__(self, store: InMemoryStore):
-        self.store = store
-        self.dataset_df: Optional[pd.DataFrame] = None
-        self.waccmap: Optional[pd.DataFrame] = None
-        self.contacts_df: Optional[pd.DataFrame] = None
-
-    def load_data(self, data_dict: Dict):
-        """Load financial data into memory"""
-        self.dataset_df = data_dict.get('dataset')
-        self.waccmap = data_dict.get('wacc')
-        self.contacts_df = data_dict.get('contacts')
-
-    def extract_company_info(self, company_name: str) -> Optional[Dict]:
-        """Extract company information with memory context"""
-        if self.dataset_df is None:
-            return None
-
-        matching = self.dataset_df[
-            self.dataset_df['company'].str.contains(company_name, case=False, na=False)
-        ]
-
-        if matching.empty:
-            return None
-
-        company_row = matching.iloc[0]
-        info = {
-            'company_name': company_row['company'],
-            'category_code': company_row.get('category_code'),
-            'nace': company_row.get('nace'),
-            'employees': company_row.get('employees'),
-            'ebit': company_row.get('ebit'),
-            'net_income': company_row.get('net income'),
-            'row_data': company_row
-        }
-
-        # Store in memory - FIXED: Use positional arguments only
-        key = f"company_{company_row['company']}"
-        try:
-            self.store.put(key, info)
-        except Exception as e:
-            # Silently handle storage errors (store may not support put in some contexts)
-            pass
-
-        return info
-
-    def get_sector_benchmarks(self, category_code: str) -> Optional[Dict]:
-        """Get sector benchmarks for comparison"""
-        if self.waccmap is None:
-            return None
-
-        category_data = self.waccmap[
-            self.waccmap['category_code'].astype(str) == str(category_code)
-        ]
-
-        if category_data.empty:
-            return None
-
-        row = category_data.iloc[0]
-        benchmarks = {
-            'category_code': category_code,
-            'ltde_p50': row.get('ltde50th'),
-            'edamargin_p50': row.get('edamarg50th'),
-            'wacc': row.get('wacc'),
-            'growth_rate': row.get('g')
-        }
-
-        return benchmarks
-
-# ============================================================================
-# LANGGRAPH AGENT NODES
-# ============================================================================
-
-def process_user_input(state: Dict) -> Dict:
-    """Process and understand user input"""
-    user_input = state.get('user_input', '')
-    agent_state: AgentState = state.get('agent_state')
-
-    # Intent recognition
-    intent = "general"
-
-    if any(word in user_input.lower() for word in ['company', 'search', 'find']):
-        intent = "company_search"
-    elif any(word in user_input.lower() for word in ['metric', 'ratio', 'compare']):
-        intent = "metric_analysis"
-    elif any(word in user_input.lower() for word in ['dcf', 'valuation', 'value']):
-        intent = "valuation"
-    elif any(word in user_input.lower() for word in ['grow', 'growth', 'predict']):
-        intent = "predictability"
-
-    state['detected_intent'] = intent
-    state['processed_input'] = user_input.lower().strip()
-
-    return state
-
-def retrieve_financial_context(state: Dict) -> Dict:
-    """Retrieve relevant financial context from memory"""
-    agent_state: AgentState = state.get('agent_state')
-    processor: FinancialMemoryProcessor = state.get('processor')
-    intent = state.get('detected_intent', 'general')
-
-    context = {
-        'conversation_history': agent_state.get_conversation_context(last_n=3),
-        'current_company': agent_state.current_company,
-        'stored_companies': list(agent_state.company_contexts.keys())
+st.markdown("""
+<style>
+    .stChatMessage {
+        padding: 12px 16px;
+        border-radius: 8px;
+        margin-bottom: 8px;
     }
 
-    if intent == "company_search":
-        # Extract company name from input
-        keywords = state['processed_input'].split()
-        for keyword in keywords:
-            company_info = processor.extract_company_info(keyword)
-            if company_info:
-                agent_state.current_company = company_info['company_name']
-                context['found_company'] = company_info
-                break
+    .stChatMessage.user {
+        background-color: #E3F2FD;
+        border-left: 4px solid #1976D2;
+    }
 
-    state['financial_context'] = context
-    return state
+    .stChatMessage.assistant {
+        background-color: #F3E5F5;
+        border-left: 4px solid #7B1FA2;
+    }
 
-def generate_response(state: Dict) -> Dict:
-    """Generate agent response based on context"""
-    agent_state: AgentState = state.get('agent_state')
-    intent = state.get('detected_intent', 'general')
-    context = state.get('financial_context', {})
-    user_input = state.get('user_input', '')
+    .agent-info {
+        background-color: #F0F2F6;
+        padding: 12px;
+        border-radius: 8px;
+        margin-bottom: 16px;
+        border-left: 4px solid #00BFA5;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-    response = ""
+# ============================================================================
+# SIDEBAR CONFIGURATION
+# ============================================================================
 
-    if intent == "company_search" and context.get('found_company'):
-        company = context['found_company']
-        response = f"""
-I found **{company['company_name']}**! Here's what I know:
-- **Category:** {company['category_code']}
-- **NACE:** {company['nace']}
-- **Employees:** {company['employees']}
-- **EBIT:** €{company['ebit']:,.2f}
-- **Net Income:** €{company['net_income']:,.2f}
+with st.sidebar:
+    st.markdown("## ⚙️ Configuration")
 
-Would you like me to run a valuation analysis or compare it with sector benchmarks?
-"""
+    # Mode selection
+    mode = st.radio(
+        "Select Mode:",
+        options=["Chat Agent", "Data Management", "Settings"],
+        help="Choose between agent chat, data management, or settings"
+    )
 
-    elif intent == "metric_analysis":
-        if agent_state.current_company:
-            response = f"""
-I'm ready to analyze metrics for **{agent_state.current_company}**. 
-I can compare:
-- LTDE (Long-term Debt / Shareholders' Funds)
-- EDAMARGIN (EBITDA / Revenue)
-- FX (Employee Costs / Revenue)
+    st.markdown("---")
 
-Which metric interests you most?
-"""
-        else:
-            response = "Please tell me which company you'd like to analyze."
+    # Data status
+    st.markdown("### 📊 Data Status")
 
-    elif intent == "valuation":
-        response = """
-I'll calculate a DCF valuation for the selected company. I need to know:
-1. Forecast period (default: 5 years)
-2. Should I use sector WACC or company-specific parameters?
-3. Any specific growth assumptions?
+    if st.session_state.get('data_loaded', False):
+        st.success("✅ Financial data loaded")
 
-What would you prefer?
-"""
+        if st.session_state.get('dataset_df') is not None:
+            st.metric("Companies", len(st.session_state['dataset_df']))
 
-    elif intent == "predictability":
-        response = """
-I can assess the company's predictability using our decision tree model.
-This analyzes:
-- Growth trajectory
-- Sell-side analyst coverage
-- Management age
-- Revenue scale
-- Margin quality
-
-Ready when you are!
-"""
-
+        if st.session_state.get('waccmap') is not None:
+            st.metric("Sectors", 
+                     st.session_state['waccmap']['category_code'].nunique())
     else:
-        response = f"""
-I'm your Financial Analysis Agent. I can help you with:
+        st.info("📂 Click 'Load Data' to get started")
 
-📊 **Company Search** - Find and analyze companies
-📈 **Metrics Analysis** - Compare financial ratios
-💰 **Valuation** - Calculate DCF values
-🎯 **Predictability** - Assess company predictability
-📇 **Contacts** - Find key contacts
+    st.markdown("---")
 
-What would you like to explore?
-"""
+    # Load data button
+    st.markdown("### 📥 Data Loading")
 
-    # Store in memory
-    turn = agent_state.add_conversation_turn(user_input, response.strip(), context)
-    state['response'] = response.strip()
-    state['conversation_turn'] = turn
+    if st.button("🔄 Load from Dropbox", use_container_width=True, key="sidebar_load"):
+        with st.spinner("Loading financial data..."):
+            try:
+                data = load_all_data_from_dropbox()
+                st.session_state.dataset_df = data.get('dataset')
+                st.session_state.waccmap = data.get('wacc')
+                st.session_state.portfolio_df = data.get('portfolio')
+                st.session_state.financial_statements = data.get('financial_statements')
+                st.session_state.contacts_df = data.get('contacts')
+                st.session_state.data_loaded = True
+                st.success("✅ Data loaded successfully!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to load data: {str(e)}")
 
-    return state
+    # Manual upload
+    st.markdown("### 📤 Manual Upload")
 
-def update_memory(state: Dict) -> Dict:
-    """Update persistent memory with new information"""
-    agent_state: AgentState = state.get('agent_state')
-    turn: ConversationTurn = state.get('conversation_turn')
+    dataset_file = st.file_uploader("Dataset (XLSX)", type="xlsx", key="dataset_upload")
+    if dataset_file:
+        st.session_state.dataset_df = pd.read_excel(dataset_file, engine='openpyxl')
+        st.success("✅ Dataset uploaded")
 
-    # Store conversation turn - FIXED: Using positional arguments only
-    key = f"turn_{turn.turn_id}"
-    try:
-        # LangGraph InMemoryStore.put(key, value) - positional args only
-        agent_state.memory_store.put(key, turn.to_dict())
-    except Exception as e:
-        # Log error but don't crash - memory store may have limitations
-        pass
+    wacc_file = st.file_uploader("WACC Map (XLSX)", type="xlsx", key="wacc_upload")
+    if wacc_file:
+        st.session_state.waccmap = pd.read_excel(wacc_file, engine='openpyxl')
+        st.success("✅ WACC loaded")
 
-    # Store context if company found
-    if state.get('financial_context', {}).get('found_company'):
-        company = state['financial_context']['found_company']
-        company_context = CompanyContext(
-            company_name=company['company_name'],
-            category_code=company['category_code'],
-            metrics={'employees': company['employees'], 'ebit': company['ebit']},
-            dcf_result={},
-            predictability='pending',
-            last_updated=datetime.now()
-        )
-        agent_state.store_company_context(company_context)
+    st.markdown("---")
 
-    return state
+    # Info
+    st.markdown("### ℹ️ About")
+    st.info("""
+    **Financial Analysis Agent**
 
-# ============================================================================
-# LANGGRAPH WORKFLOW CONSTRUCTION
-# ============================================================================
-
-def create_financial_agent():
-    """Create the LangGraph financial analysis agent"""
-
-    # Initialize the graph
-    workflow = StateGraph(dict)
-
-    # Add nodes
-    workflow.add_node("process_input", process_user_input)
-    workflow.add_node("retrieve_context", retrieve_financial_context)
-    workflow.add_node("generate_response", generate_response)
-    workflow.add_node("update_memory", update_memory)
-
-    # Add edges
-    workflow.add_edge(START, "process_input")
-    workflow.add_edge("process_input", "retrieve_context")
-    workflow.add_edge("retrieve_context", "generate_response")
-    workflow.add_edge("generate_response", "update_memory")
-    workflow.add_edge("update_memory", END)
-
-    return workflow.compile()
+    powered by:
+    - 🔗 LangGraph
+    - 🧠 InMemoryStore
+    - 📊 Financial Data
+    """)
 
 # ============================================================================
-# STREAMLIT UI INTERFACE
+# MAIN CONTENT
 # ============================================================================
 
-def init_agent_session():
-    """Initialize agent session in Streamlit"""
-    if 'agent_state' not in st.session_state:
-        user_id = st.session_state.get('user_id', 'default_user')
-        session_id = str(uuid.uuid4())
-        st.session_state.agent_state = AgentState(user_id, session_id)
-        st.session_state.memory_processor = FinancialMemoryProcessor(
-            st.session_state.agent_state.memory_store
-        )
-        st.session_state.agent_graph = create_financial_agent()
+def main():
+    """Main application logic"""
 
-def display_agent_interface():
-    """Display the agent chat interface"""
-
-    # Initialize
+    # Initialize session
     init_agent_session()
 
-    agent_state: AgentState = st.session_state.agent_state
-    memory_processor: FinancialMemoryProcessor = st.session_state.memory_processor
-    agent_graph = st.session_state.agent_graph
+    if mode == "Chat Agent":
+        st.markdown("# 🤖 Financial Analysis Agent")
+        st.markdown("""
+        *Your intelligent assistant for financial data analysis, company valuation, and investment insights.*
+        """)
 
-    # Load financial data
-    if 'data_loaded' not in st.session_state:
-        with st.spinner("Loading financial data..."):
-            # Check if data is in session
+        # Agent info box
+        st.markdown("""
+        <div class="agent-info">
+            <strong>🧠 Agent Capabilities:</strong><br>
+            • Search and analyze companies<br>
+            • Calculate financial metrics & ratios<br>
+            • Run DCF valuation models<br>
+            • Assess company predictability<br>
+            • Find and manage contacts
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # Check data loaded
+        if not st.session_state.get('data_loaded', False):
+            st.warning("""
+            ⚠️ **Data not loaded!**
+
+            Please load financial data first:
+            1. Click **"Load from Dropbox"** in the sidebar, OR
+            2. Upload files manually using the file uploaders
+
+            Once loaded, the agent will be ready to assist.
+            """)
+        else:
+            # Display agent interface
+            display_agent_interface()
+
+    elif mode == "Data Management":
+        st.markdown("# 📊 Data Management")
+
+        tab1, tab2, tab3 = st.tabs(["Dataset", "WACC Map", "Contacts"])
+
+        with tab1:
+            st.markdown("## Dataset")
             if st.session_state.get('dataset_df') is not None:
-                data_dict = {
-                    'dataset': st.session_state.get('dataset_df'),
-                    'wacc': st.session_state.get('waccmap'),
-                    'contacts': st.session_state.get('contacts_df')
-                }
+                df = st.session_state['dataset_df']
+                st.success(f"✅ {len(df)} companies loaded")
+                st.dataframe(df, use_container_width=True, height=400)
+
+                # Download button
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download as CSV",
+                    data=csv,
+                    file_name="dataset.csv",
+                    mime="text/csv"
+                )
             else:
-                # Try to load from Dropbox
-                try:
-                    data_dict = load_all_data_from_dropbox()
-                except:
-                    data_dict = {
-                        'dataset': None,
-                        'wacc': None,
-                        'contacts': None
-                    }
+                st.info("No dataset loaded yet")
 
-            memory_processor.load_data(data_dict)
-            st.session_state.data_loaded = True
+        with tab2:
+            st.markdown("## WACC Map")
+            if st.session_state.get('waccmap') is not None:
+                df = st.session_state['waccmap']
+                st.success(f"✅ {len(df)} categories")
+                st.dataframe(df, use_container_width=True, height=400)
+            else:
+                st.info("No WACC map loaded yet")
 
-    # Display header
-    st.markdown("## 🤖 Financial Analysis Agent")
-    st.markdown("*Powered by LangGraph Memory & Financial Data Integration*")
-    st.markdown("---")
+        with tab3:
+            st.markdown("## Contacts")
+            if st.session_state.get('contacts_df') is not None:
+                df = st.session_state['contacts_df']
+                st.success(f"✅ {len(df)} contacts")
+                st.dataframe(df, use_container_width=True, height=400)
+            else:
+                st.info("No contacts loaded yet")
 
-    # Display conversation history
-    st.markdown("### 💬 Conversation History")
-    conversation_container = st.container()
+    elif mode == "Settings":
+        st.markdown("# ⚙️ Settings")
 
-    with conversation_container:
-        for turn in agent_state.conversation_history:
-            # User message
-            with st.chat_message("user"):
-                st.markdown(turn.user_input)
+        st.markdown("## Agent Configuration")
 
-            # Agent response
-            with st.chat_message("assistant"):
-                st.markdown(turn.agent_response)
+        col1, col2 = st.columns(2)
 
-    st.markdown("---")
+        with col1:
+            max_history = st.slider(
+                "Max Conversation History",
+                min_value=3,
+                max_value=50,
+                value=10,
+                help="Number of recent messages to consider in agent memory"
+            )
+            st.session_state.max_history = max_history
 
-    # Input area
-    st.markdown("### ⌨️ Your Input")
-    user_input = st.text_input(
-        "Ask me anything about financial analysis:",
-        placeholder="e.g., 'Analyze company X' or 'Compare metrics'",
-        key="user_input_field"
-    )
+        with col2:
+            enable_logging = st.checkbox(
+                "Enable Logging",
+                value=False,
+                help="Log all agent interactions"
+            )
+            st.session_state.enable_logging = enable_logging
 
-    col1, col2, col3 = st.columns([1, 1, 1])
+        st.markdown("---")
 
-    with col1:
-        submit = st.button("📤 Send", use_container_width=True)
+        st.markdown("## Session Information")
 
-    with col2:
-        clear_history = st.button("🗑️ Clear History", use_container_width=True)
+        if 'agent_state' in st.session_state:
+            agent_state = st.session_state.agent_state
 
-    with col3:
-        show_memory = st.button("🧠 View Memory", use_container_width=True)
+            info_col1, info_col2, info_col3 = st.columns(3)
 
-    # Process input
-    if submit and user_input:
-        with st.spinner("Processing..."):
-            # Prepare state for agent
-            agent_input = {
-                'user_input': user_input,
-                'agent_state': agent_state,
-                'processor': memory_processor
-            }
+            with info_col1:
+                st.metric("Session ID", agent_state.session_id[:8] + "...")
 
-            # Run agent
-            result = agent_graph.invoke(agent_input)
+            with info_col2:
+                st.metric("Total Turns", len(agent_state.conversation_history))
 
-            # Rerun to display new message
+            with info_col3:
+                st.metric("Stored Companies", len(agent_state.company_contexts))
+
+        st.markdown("---")
+
+        st.markdown("## Danger Zone")
+
+        if st.button("🗑️ Clear All Data", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.success("✅ All data cleared")
             st.rerun()
 
-    if clear_history:
-        st.session_state.agent_state = AgentState(
-            agent_state.user_id,
-            str(uuid.uuid4())
-        )
-        st.rerun()
-
-    if show_memory:
-        st.markdown("---")
-        st.markdown("### 🧠 Agent Memory State")
-
-        memory_info = {
-            'session_id': agent_state.session_id,
-            'total_turns': len(agent_state.conversation_history),
-            'stored_companies': list(agent_state.company_contexts.keys()),
-            'current_company': agent_state.current_company,
-            'created_at': agent_state.created_at.isoformat()
-        }
-
-        st.json(memory_info)
-
-        if agent_state.conversation_history:
-            st.markdown("### 📜 Full Conversation Export")
-            export_data = agent_state.to_dict()
-            st.download_button(
-                label="📥 Download Conversation",
-                data=json.dumps(export_data, indent=2),
-                file_name=f"conversation_{agent_state.session_id}.json",
-                mime="application/json"
-            )
-
 if __name__ == "__main__":
-    st.set_page_config(
-        page_title="Financial Agent",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-
-    display_agent_interface()
+    main()

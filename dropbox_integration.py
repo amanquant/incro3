@@ -18,13 +18,12 @@ import streamlit as st
 load_dotenv()
 
 # Dropbox OAuth2 credentials
-DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
-DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
-DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
+DROPBOX_APP_KEY = st.secrets.get("DROPBOX_APP_KEY", os.getenv("DROPBOX_APP_KEY"))
+DROPBOX_APP_SECRET = st.secrets.get("DROPBOX_APP_SECRET", os.getenv("DROPBOX_APP_SECRET"))
+DROPBOX_REFRESH_TOKEN = st.secrets.get("DROPBOX_REFRESH_TOKEN", os.getenv("DROPBOX_REFRESH_TOKEN"))
 
-# Fallback to legacy token
 try:
-    DROPBOX_TOKEN = st.secrets.get("dropbox_token", os.getenv("DROPBOX_TOKEN", None))
+    DROPBOX_TOKEN = st.secrets.get("DROPBOX_TOKEN", os.getenv("DROPBOX_TOKEN", None))
 except:
     DROPBOX_TOKEN = os.getenv("DROPBOX_TOKEN", None)
 
